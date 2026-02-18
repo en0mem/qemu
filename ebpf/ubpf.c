@@ -2,7 +2,7 @@
 #include "qemu/error-report.h"
 #include "ebpf/ubpf.h"
 
-#include <_stdio.h>
+#include <stdbool.h>
 #include <cstddef>
 #include <cstdint>
 #include <stddef.h>
@@ -94,4 +94,44 @@ uint64_t qemu_ubpf_run_once(UbpfState *u_ebpf, void *target, size_t target_len) 
     }
 
     return result;
+}
+
+static void register_functions(struct ubpf_vm *vm) {
+    return;
+}
+
+int qemu_ubpf_prepare(UbpfState *u_ebpf, char *code_path) {
+    bool is_elf;
+    char *errmsg;
+    int ret;
+
+    if (!qemu_ubpf_read_code(u_ebpf, code_path)) {
+        error_report("Ubpf failed to read code");
+        return -1;
+    }
+
+    u_ebpf->vm = ubpf_create();
+    if (!u_ebpf->vm) {
+        error_report("Failed to create UBpf VM!");
+        return -1;
+    }
+
+    register_functions(u_ebpf->vm);
+
+    is_elf = u_ebpf->code_len >= SELFMAG && !memcmp(u_ebpf->code, ELFMAG, SELFMAG);
+
+    if (is_elf) {
+        ret = ubpf_load_elf(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
+    } else {
+        ret = ubpf_load(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
+    }
+    
+    if (ret < 0) {
+        error_report("Failed to load ubpf code: %s ", errmsg);
+        free(errmsg);
+        ubpf_destroy(u_ebpf->vm);
+        return -1;
+    }
+
+    return 0;
 }
