@@ -1260,6 +1260,11 @@ if not get_option('slirp').auto() or have_system
   endif
 endif
 
+ubpf = not_found
+if not get_option('ubpf').auto()
+  ubpf = dependency('ubpf', required: get_option('ubpf'), method: 'pkg-config')
+endif
+
 enable_passt = get_option('passt') \
   .require(host_os == 'linux', error_message: 'passt is supported only on Linux') \
   .require(gio.found(), error_message: 'passt requires gio') \

@@ -1,0 +1,5 @@
+[wrap-git]
+url = https://github.com/iovisor/ubpf.git
+revision = head
+# ubpf itself has submodules which has to be cloned later on as well
+clone-recursive = true

@@ -276,6 +276,7 @@ unset target_list_exclude
 # because they automatically enable/disable other options
 tcg="auto"
 cfi="false"
+ubpf="auto"
 
 # Meson has PIE as a boolean rather than enabled/disabled/auto,
 # and we also need to check for -static-pie before Meson runs
@@ -712,6 +713,14 @@ for opt do
   --disable-tcg) tcg="disabled"
   ;;
   --enable-tcg) tcg="enabled"
+  ;;
+  --disable-ubpf) ubpf="disabled"
+  ;;
+  --enable-ubpf) ubpf="enabled"
+  ;;
+  --enable-ubpf=git) ubpf="internal"
+  ;;
+  --enable-ubpf=*) ubpf="$optarg"
   ;;
   --disable-system) system="no"
   ;;
