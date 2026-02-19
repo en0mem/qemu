@@ -35,6 +35,8 @@ meson_options_help() {
   printf "%s\n" '                           measure coroutine stack usage'
   printf "%s\n" '  --enable-debug-tcg       TCG debugging'
   printf "%s\n" '  --enable-fdt[=CHOICE]    Whether and how to find the libfdt library'
+  printf "%s\n" '  --enable-ubpf[=CHOICE]   Whether and how to find the ubpf library'
+  printf "%s\n" '                           (choices: auto/disabled/enabled/internal/system)'
   printf "%s\n" '                           (choices: auto/disabled/enabled/internal/system)'
   printf "%s\n" '  --enable-fuzzing         build fuzzing targets'
   printf "%s\n" '  --enable-gcov            Enable coverage tracking.'
@@ -488,6 +490,9 @@ _meson_option_parse() {
     --disable-selinux) printf "%s" -Dselinux=disabled ;;
     --enable-slirp) printf "%s" -Dslirp=enabled ;;
     --disable-slirp) printf "%s" -Dslirp=disabled ;;
+    --enable-ubpf) printf "%s" -Dubpf=enabled ;;
+    --disable-ubpf) printf "%s" -Dubpf=disabled ;;
+    --enable-ubpf=*) quote_sh "-Dubpf=$2" ;;
     --enable-slirp-smbd) printf "%s" -Dslirp_smbd=enabled ;;
     --disable-slirp-smbd) printf "%s" -Dslirp_smbd=disabled ;;
     --enable-smartcard) printf "%s" -Dsmartcard=enabled ;;

@@ -1260,10 +1260,7 @@ if not get_option('slirp').auto() or have_system
   endif
 endif
 
-ubpf = not_found
-if not get_option('ubpf').auto()
-  ubpf = dependency('ubpf', required: get_option('ubpf'), method: 'pkg-config')
-endif
+
 
 enable_passt = get_option('passt') \
   .require(host_os == 'linux', error_message: 'passt is supported only on Linux') \
@@ -2268,6 +2265,51 @@ if not get_option('libdw').auto() or \
                        required: get_option('libdw'))
 endif
 
+ubpf = not_found
+ubpf_opt = 'disabled'
+if have_system
+  ubpf_opt = get_option('ubpf')
+  if ubpf_opt in ['enabled', 'auto', 'system']
+    have_internal = fs.exists(meson.current_source_dir() / 'ubpf/vm/Makefile')
+    ubpf = dependency('ubpf', kwargs: static_kwargs,
+                      method: 'pkg-config',
+                      required: ubpf_opt == 'system' or
+                      ubpf_opt == 'enabled' and not have_internal)
+    if ubpf.found()
+      ubpf_opt = 'system'
+    elif have_internal
+      ubpf_opt = 'internal'
+    else
+      ubpf_opt = 'disabled'
+    endif
+  endif
+  if ubpf_opt == 'internal'
+    ubpf_data = configuration_data()
+
+    ubpf_files = files(
+      'ubpf/vm/ubpf_jit_x86_64.c',
+      'ubpf/vm/ubpf_vm.c',
+      'ubpf/vm/ubpf_loader.c',
+    )
+
+    ubpf_cargs = [
+      '-Wno-error', '-w',
+      '-include', 'ubpf-defs.h'
+    ]
+
+    configure_file(output: 'ubpf-defs.h', configuration: ubpf_data)
+    ubpf_inc = include_directories('ubpf/vm', 'ubpf/vm/inc')
+    libubpf = static_library('ubpf',
+                             sources: ubpf_files,
+                             c_args: ubpf_cargs,
+                             include_directories: ubpf_inc)
+    ubpf = declare_dependency(link_with: libubpf,
+                              include_directories: ubpf_inc)
+  endif
+endif
+
+common_ss.add(ubpf)
+
 #################
 # config-host.h #
 #################
@@ -2388,6 +2430,8 @@ config_host_data.set_quoted('CONFIG_QEMU_LOCALEDIR', get_option('prefix') / get_
 config_host_data.set_quoted('CONFIG_QEMU_LOCALSTATEDIR', get_option('prefix') / get_option('localstatedir'))
 config_host_data.set_quoted('CONFIG_QEMU_MODDIR', get_option('prefix') / qemu_moddir)
 config_host_data.set_quoted('CONFIG_SYSCONFDIR', get_option('prefix') / get_option('sysconfdir'))
+
+config_host_data.set('CONFIG_UBPF', ubpf.found())
 
 if enable_modules
   config_host_data.set('CONFIG_STAMP', run_command(
@@ -4967,6 +5011,7 @@ summary_info += {'libudev':           libudev}
 # Dummy dependency, keep .found()
 summary_info += {'FUSE lseek':        fuse_lseek.found()}
 summary_info += {'selinux':           selinux}
+summary_info += {'ubpf support':      ubpf_opt == 'internal' ? ubpf_opt : ubpf}
 summary_info += {'libdw':             libdw}
 if host_os == 'freebsd'
   summary_info += {'libinotify-kqueue': inotify}
