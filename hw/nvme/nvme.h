@@ -23,6 +23,7 @@
 #include "hw/block/block.h"
 
 #include "block/nvme.h"
+#include "ebpf/ubpf.h"
 
 #define NVME_MAX_CONTROLLERS 256
 #define NVME_MAX_NAMESPACES  256
@@ -598,6 +599,8 @@ typedef struct NvmeCtrl {
     uint8_t     smart_critical_warning;
     uint32_t    conf_msix_qsize;
     uint32_t    conf_ioqpairs;
+
+    UbpfState   *ubpf_state;
     uint64_t    dbbuf_dbs;
     uint64_t    dbbuf_eis;
     bool        dbbuf_enabled;

@@ -622,12 +622,14 @@ enum NvmeAdminCommands {
     NVME_ADM_CMD_FORMAT_NVM     = 0x80,
     NVME_ADM_CMD_SECURITY_SEND  = 0x81,
     NVME_ADM_CMD_SECURITY_RECV  = 0x82,
+    NVME_ADM_CMD_UBPF_UPLOAD    = 0xC0,
 };
 
 enum NvmeIoCommands {
     NVME_CMD_FLUSH              = 0x00,
     NVME_CMD_WRITE              = 0x01,
     NVME_CMD_READ               = 0x02,
+    NVME_CMD_UBPF_READ          = 0x82,
     NVME_CMD_WRITE_UNCOR        = 0x04,
     NVME_CMD_COMPARE            = 0x05,
     NVME_CMD_WRITE_ZEROES       = 0x08,

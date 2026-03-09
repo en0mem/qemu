@@ -284,6 +284,7 @@ static const uint32_t nvme_cse_acs_default[256] = {
     [NVME_ADM_CMD_DIRECTIVE_SEND]   = NVME_CMD_EFF_CSUPP,
     [NVME_ADM_CMD_SECURITY_SEND]    = NVME_CMD_EFF_CSUPP,
     [NVME_ADM_CMD_SECURITY_RECV]    = NVME_CMD_EFF_CSUPP,
+    [NVME_ADM_CMD_UBPF_UPLOAD]      = NVME_CMD_EFF_CSUPP,
 };
 
 static const uint32_t nvme_cse_iocs_nvm_default[256] = {
@@ -291,6 +292,7 @@ static const uint32_t nvme_cse_iocs_nvm_default[256] = {
     [NVME_CMD_WRITE_ZEROES]         = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_WRITE]                = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_READ]                 = NVME_CMD_EFF_CSUPP,
+    [NVME_CMD_UBPF_READ]            = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_DSM]                  = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_VERIFY]               = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_COPY]                 = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
@@ -304,6 +306,7 @@ static const uint32_t nvme_cse_iocs_zoned_default[256] = {
     [NVME_CMD_WRITE_ZEROES]         = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_WRITE]                = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_READ]                 = NVME_CMD_EFF_CSUPP,
+    [NVME_CMD_UBPF_READ]            = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_DSM]                  = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_VERIFY]               = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_COPY]                 = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
@@ -1453,14 +1456,61 @@ uint16_t nvme_bounce_mdata(NvmeCtrl *n, void *ptr, uint32_t len,
     return nvme_tx(n, &req->sg, ptr, len, dir);
 }
 
+static void nvme_ubpf_read_cb(void *opaque, int ret)
+{
+    NvmeBounceContext *ctx = opaque;
+    NvmeRequest *req = ctx->req;
+
+    if (ret == 0) {
+        printf("[uBPF Intercept] Read %zu bytes before DMA!\n", ctx->data.iov.size);
+        NvmeCtrl *n = req->sq->ctrl;
+
+        /* If an eBPF program is loaded, execute it! */
+        if (n->ubpf_state && n->ubpf_state->vm) {
+            uint64_t bpf_ret;
+            int run_ret = ubpf_exec(n->ubpf_state->vm, ctx->data.bounce, ctx->data.iov.size, &bpf_ret);
+            if (run_ret == 0) {
+                printf("[uBPF Intercept] Program executed successfully. Output: 0x%016lx\n", bpf_ret);
+            } else {
+                printf("[uBPF Intercept] Program execution failed with %d\n", run_ret);
+            }
+        }
+
+        /* Manually push the intercepted data to guest RAM via DMA */
+        dma_buf_read(ctx->data.bounce, ctx->data.iov.size, NULL,
+                     &req->sg.qsg, MEMTXATTRS_UNSPECIFIED);
+    }
+
+    /* Cleanup our bounce buffer context */
+    qemu_iovec_destroy(&ctx->data.iov);
+    g_free(ctx->data.bounce);
+    BlockCompletionFunc *cb = (BlockCompletionFunc *)(void *)ctx->mdata.bounce; /* we stashed the original cb here */
+    g_free(ctx);
+
+    /* Continue the NVMe completion path */
+    cb(req, ret);
+}
+
 static inline void nvme_blk_read(BlockBackend *blk, int64_t offset,
                                  uint32_t align, BlockCompletionFunc *cb,
                                  NvmeRequest *req)
 {
     assert(req->sg.flags & NVME_SG_ALLOC);
 
-    if (req->sg.flags & NVME_SG_DMA) {
-        req->aiocb = dma_blk_read(blk, &req->sg.qsg, offset, align, cb, req);
+    if ((req->sg.flags & NVME_SG_DMA) && req->cmd.opcode == NVME_CMD_UBPF_READ) {
+        /*
+         * Detour the DMA read: read into our local QEMU memory first so we
+         * can inspect/modify the data before it crosses the PCIe bus!
+         */
+        NvmeBounceContext *ctx = g_malloc0(sizeof(*ctx));
+        ctx->req = req;
+        ctx->data.bounce = g_malloc(req->sg.qsg.size);
+        qemu_iovec_init(&ctx->data.iov, 1);
+        qemu_iovec_add(&ctx->data.iov, ctx->data.bounce, req->sg.qsg.size);
+        ctx->mdata.bounce = (uint8_t *)(void *)cb; /* Stash the original callback */
+
+        req->aiocb = blk_aio_preadv(blk, offset, &ctx->data.iov, 0,
+                                    nvme_ubpf_read_cb, ctx);
     } else {
         req->aiocb = blk_aio_preadv(blk, offset, &req->sg.iov, 0, cb, req);
     }
@@ -2195,6 +2245,31 @@ static void nvme_rw_cb(void *opaque, int ret)
 
     if (ret) {
         goto out;
+    }
+
+    if (req->cmd.opcode == NVME_CMD_READ) {
+        uint8_t buf[64] = {0};
+        size_t print_len = 0;
+        
+        if (req->sg.flags & NVME_SG_DMA) {
+            if (req->sg.qsg.nsg > 0) {
+                print_len = MIN(req->sg.qsg.size, 64);
+                pci_dma_read(PCI_DEVICE(nvme_ctrl(req)), req->sg.qsg.sg[0].base, buf, print_len);
+            }
+        } else if (req->sg.flags & NVME_SG_ALLOC) {
+            if (req->sg.iov.niov > 0) {
+                print_len = MIN(req->sg.iov.iov[0].iov_len, 64);
+                memcpy(buf, req->sg.iov.iov[0].iov_base, print_len);
+            }
+        }
+        
+        if (print_len > 0) {
+            printf("NVMe READ data (%zu bytes): ", print_len);
+            for (size_t i = 0; i < print_len; i++) {
+                printf("%02x ", buf[i]);
+            }
+            printf("\n");
+        }
     }
 
     if (ns->lbaf.ms) {
@@ -4612,6 +4687,7 @@ static uint16_t __nvme_io_cmd_nvm(NvmeCtrl *n, NvmeRequest *req)
     case NVME_CMD_WRITE:
         return nvme_write(n, req);
     case NVME_CMD_READ:
+    case NVME_CMD_UBPF_READ:
         return nvme_read(n, req);
     case NVME_CMD_COMPARE:
         return nvme_compare(n, req);
@@ -7571,6 +7647,34 @@ static uint16_t nvme_directive_receive(NvmeCtrl *n, NvmeRequest *req)
     }
 }
 
+static uint16_t nvme_ubpf_upload(NvmeCtrl *n, NvmeRequest *req)
+{
+    uint32_t prog_size = le32_to_cpu(req->cmd.cdw10);
+    uint16_t status;
+
+    if (!prog_size) {
+        return NVME_INVALID_FIELD | NVME_DNR;
+    }
+
+    if (!n->ubpf_state) {
+        n->ubpf_state = g_malloc0(sizeof(UbpfState));
+    }
+
+    g_autofree uint8_t *bounce = g_malloc(prog_size);
+    status = nvme_h2c(n, bounce, prog_size, req);
+    if (status) {
+        return status;
+    }
+
+    if (qemu_ubpf_load_bytecode(n->ubpf_state, bounce, prog_size) < 0) {
+        printf("eBPF Load Failed\n");
+        return NVME_INTERNAL_DEV_ERROR;
+    }
+
+    printf("[uBPF Intercept] Successfully uploaded %u bytes of eBPF over PCIe!\n", prog_size);
+    return NVME_SUCCESS;
+}
+
 static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeRequest *req)
 {
     trace_pci_nvme_admin_cmd(nvme_cid(req), nvme_sqid(req), req->cmd.opcode,
@@ -7627,6 +7731,8 @@ static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeRequest *req)
         return nvme_security_send(n, req);
     case NVME_ADM_CMD_SECURITY_RECV:
         return nvme_security_receive(n, req);
+    case NVME_ADM_CMD_UBPF_UPLOAD:
+        return nvme_ubpf_upload(n, req);
     default:
         g_assert_not_reached();
     }

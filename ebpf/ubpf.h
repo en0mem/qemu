@@ -1,9 +1,9 @@
 #ifndef QEMU_UBPF_H
 #define QEMU_UBPF_H
 
-#include <ubpf.h>
+#include "ubpf/vm/inc/ubpf.h"
 #include <math.h>
-#include <elf.h>
+#include "elf.h"
 
 #define MAX_LEN (1024*1024)
 
@@ -28,5 +28,8 @@ bool qemu_ubpf_read_target(UbpfState *u_ebpf, char *path);
 uint64_t qemu_ubpf_run_once(UbpfState *u_ebpf, void *target, size_t target_len);
 
 int qemu_ubpf_prepare(UbpfState *u_ebpf, char *code_path);
+
+int qemu_ubpf_init_vm(UbpfState *u_ebpf);
+int qemu_ubpf_load_bytecode(UbpfState *u_ebpf, const void *code, size_t code_len);
 
 #endif
