@@ -1470,7 +1470,7 @@ static void nvme_ubpf_read_cb(void *opaque, int ret)
             uint64_t bpf_ret;
             int run_ret = ubpf_exec(n->ubpf_state->vm, ctx->data.bounce, ctx->data.iov.size, &bpf_ret);
             if (run_ret == 0) {
-                printf("[uBPF Intercept] Program executed successfully. Output: 0x%016lx\n", bpf_ret);
+                printf("[uBPF Intercept] Program executed successfully. Output: 0x%016llx\n", bpf_ret);
             } else {
                 printf("[uBPF Intercept] Program execution failed with %d\n", run_ret);
             }
@@ -1512,7 +1512,11 @@ static inline void nvme_blk_read(BlockBackend *blk, int64_t offset,
         req->aiocb = blk_aio_preadv(blk, offset, &ctx->data.iov, 0,
                                     nvme_ubpf_read_cb, ctx);
     } else {
-        req->aiocb = blk_aio_preadv(blk, offset, &req->sg.iov, 0, cb, req);
+        if (req->sg.flags & NVME_SG_DMA) {
+            req->aiocb = dma_blk_read(blk, &req->sg.qsg, offset, align, cb, req);
+        } else {
+            req->aiocb = blk_aio_preadv(blk, offset, &req->sg.iov, 0, cb, req);
+        }
     }
 }
 
