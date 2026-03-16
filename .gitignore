@@ -20,4 +20,5 @@ GTAGS
 *.swp
 *.patch
 *.gcov
-test-nvme
+test-nvme/*
+!test-nvme/*.c
