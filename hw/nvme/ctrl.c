@@ -212,6 +212,7 @@
 #include "nvme.h"
 #include "dif.h"
 #include "trace.h"
+#include <stdio.h>
 
 #define NVME_MAX_IOQPAIRS 0xffff
 #define NVME_DB_SIZE  4
@@ -1498,10 +1499,6 @@ static inline void nvme_blk_read(BlockBackend *blk, int64_t offset,
     assert(req->sg.flags & NVME_SG_ALLOC);
 
     if ((req->sg.flags & NVME_SG_DMA) && req->cmd.opcode == NVME_CMD_UBPF_READ) {
-        /*
-         * Detour the DMA read: read into our local QEMU memory first so we
-         * can inspect/modify the data before it crosses the PCIe bus!
-         */
         NvmeBounceContext *ctx = g_malloc0(sizeof(*ctx));
         ctx->req = req;
         ctx->data.bounce = g_malloc(req->sg.qsg.size);
