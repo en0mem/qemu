@@ -1,5 +1,6 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
+#include "ubpf.h"
 #include "ebpf/ubpf.h"
 
 #include <stdbool.h>
@@ -95,8 +96,21 @@ uint64_t qemu_ubpf_run_once(UbpfState *u_ebpf, void *target, size_t target_len) 
     return result;
 }
 
+static uint32_t ubpf_get_random_number() {
+    static uint64_t rng_state = 0xDEADBEEFBECAFE;
+    uint64_t x = rng_state;
+
+
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    rng_state = x;
+    return (uint32_t)x;
+}
+
 static void register_functions(struct ubpf_vm *vm) {
-    return;
+    // add a predictable rng to simulate read bytes
+    ubpf_register(vm, 1, "get_random_number", as_external_function_t(ubpf_get_random_number));
 }
 
 int qemu_ubpf_init_vm(UbpfState *u_ebpf) {

@@ -52,7 +52,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-
+    char buf[0x100];
+    readbpf(depth, buf, sizeof(buf));
     int sector_size = 512;
     void *read_data = NULL;
     if (posix_memalign(&read_data, PAGE_SIZE, sector_size) != 0) {
