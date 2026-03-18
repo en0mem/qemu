@@ -1,5 +1,6 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
+#include "ubpf.h"
 #include "ebpf/ubpf.h"
 
 #include <elf.h>
@@ -167,7 +168,13 @@ int qemu_ubpf_prepare(UbpfState *u_ebpf, char *code_path) {
     is_elf = u_ebpf->code_len >= SELFMAG && !memcmp(u_ebpf->code, ELFMAG, SELFMAG);
 
     if (is_elf) {
+#if defined(UBPF_HAS_ELF_H)
         ret = ubpf_load_elf(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
+#else
+        error_report("uBPF ELF loading is not supported in this build.");
+        ubpf_destroy(u_ebpf->vm);
+        return -1;
+#endif
     } else {
         ret = ubpf_load(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
     }

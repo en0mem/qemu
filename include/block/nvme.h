@@ -629,6 +629,7 @@ enum NvmeIoCommands {
     NVME_CMD_FLUSH              = 0x00,
     NVME_CMD_WRITE              = 0x01,
     NVME_CMD_READ               = 0x02,
+    NVME_CMD_UBPF_READ          = 0x82,
     NVME_CMD_WRITE_UNCOR        = 0x04,
     NVME_CMD_COMPARE            = 0x05,
     NVME_CMD_WRITE_ZEROES       = 0x08,
