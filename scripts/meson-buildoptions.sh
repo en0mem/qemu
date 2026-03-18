@@ -198,7 +198,7 @@ meson_options_help() {
   printf "%s\n" '  tpm             TPM support'
   printf "%s\n" '  u2f             U2F emulation support'
   printf "%s\n" '  uadk            UADK Library support'
-  printf "%s\n" '  ubpf            uBPF support'
+  printf "%s\n" '  ubpf            ubpf support'
   printf "%s\n" '  usb-redir       libusbredir support'
   printf "%s\n" '  valgrind        valgrind debug support for coroutine stacks'
   printf "%s\n" '  vde             vde network backend support'

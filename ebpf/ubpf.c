@@ -3,7 +3,6 @@
 #include "ubpf.h"
 #include "ebpf/ubpf.h"
 
-#include <elf.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -121,7 +120,6 @@ int qemu_ubpf_load_bytecode(UbpfState *u_ebpf, const void *code, size_t code_len
     u_ebpf->code = g_malloc(code_len);
     memcpy(u_ebpf->code, code, code_len);
 
-    u_ebpf->vm = ubpf_create();
     if (!u_ebpf->vm) {
         error_report("Failed to create UBpf VM!");
         return -1;
@@ -129,13 +127,8 @@ int qemu_ubpf_load_bytecode(UbpfState *u_ebpf, const void *code, size_t code_len
 
     register_functions(u_ebpf->vm);
 
-    is_elf = u_ebpf->code_len >= SELFMAG && !memcmp(u_ebpf->code, ELFMAG, SELFMAG);
 
-    if (is_elf) {
-        ret = ubpf_load_elf(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
-    } else {
-        ret = ubpf_load(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
-    }
+    ret = ubpf_load(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
 
     if (ret < 0) {
         error_report("Failed to load ubpf code: %s ", errmsg);
@@ -165,19 +158,7 @@ int qemu_ubpf_prepare(UbpfState *u_ebpf, char *code_path) {
 
     register_functions(u_ebpf->vm);
 
-    is_elf = u_ebpf->code_len >= SELFMAG && !memcmp(u_ebpf->code, ELFMAG, SELFMAG);
-
-    if (is_elf) {
-#if defined(UBPF_HAS_ELF_H)
-        ret = ubpf_load_elf(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
-#else
-        error_report("uBPF ELF loading is not supported in this build.");
-        ubpf_destroy(u_ebpf->vm);
-        return -1;
-#endif
-    } else {
-        ret = ubpf_load(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
-    }
+    ret = ubpf_load(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
     
     if (ret < 0) {
         error_report("Failed to load ubpf code: %s ", errmsg);

@@ -208,10 +208,13 @@
 #include "hw/pci/pcie_sriov.h"
 #include "system/spdm-socket.h"
 #include "migration/vmstate.h"
+#include "qemu/memalign.h"
+
 
 #include "nvme.h"
 #include "dif.h"
 #include "trace.h"
+#include <stdint.h>
 #include <stdio.h>
 
 #define NVME_MAX_IOQPAIRS 0xffff
@@ -293,7 +296,6 @@ static const uint32_t nvme_cse_iocs_nvm_default[256] = {
     [NVME_CMD_WRITE_ZEROES]         = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_WRITE]                = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_READ]                 = NVME_CMD_EFF_CSUPP,
-    [NVME_CMD_UBPF_READ]            = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_DSM]                  = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
     [NVME_CMD_VERIFY]               = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_COPY]                 = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
@@ -2249,31 +2251,6 @@ static void nvme_rw_cb(void *opaque, int ret)
         goto out;
     }
 
-    if (req->cmd.opcode == NVME_CMD_READ) {
-        uint8_t buf[64] = {0};
-        size_t print_len = 0;
-        
-        if (req->sg.flags & NVME_SG_DMA) {
-            if (req->sg.qsg.nsg > 0) {
-                print_len = MIN(req->sg.qsg.size, 64);
-                pci_dma_read(PCI_DEVICE(nvme_ctrl(req)), req->sg.qsg.sg[0].base, buf, print_len);
-            }
-        } else if (req->sg.flags & NVME_SG_ALLOC) {
-            if (req->sg.iov.niov > 0) {
-                print_len = MIN(req->sg.iov.iov[0].iov_len, 64);
-                memcpy(buf, req->sg.iov.iov[0].iov_base, print_len);
-            }
-        }
-        
-        if (print_len > 0) {
-            printf("NVMe READ data (%zu bytes): ", print_len);
-            for (size_t i = 0; i < print_len; i++) {
-                printf("%02x ", buf[i]);
-            }
-            printf("\n");
-        }
-    }
-
     if (ns->lbaf.ms) {
         NvmeRwCmd *rw = (NvmeRwCmd *)&req->cmd;
         uint64_t slba = le64_to_cpu(rw->slba);
@@ -3762,13 +3739,14 @@ static uint16_t nvme_ebpf_read(NvmeCtrl *n, NvmeRequest *req)
     uint64_t slba = le64_to_cpu(rw->slba);
     uint32_t nlb = (uint32_t)le16_to_cpu(rw->nlb) + 1;
     uint64_t out_size = req->sg.qsg.size;
-    g_autofree uint8_t *out_buf = g_malloc(out_size);
+    QEMU_AUTO_VFREE uint8_t *out_buf = blk_try_blockalign(blk, out_size);
     uint64_t data_size = nvme_l2b(ns, nlb);
     uint64_t data_offset;
     uint16_t status;
     uint64_t ubpf_ret;
     int ret;
 
+    assert(out_buf != NULL);
     assert(!nvme_ns_ext(ns));
     status = nvme_check_mdts(n, data_size);
     if (status) {
@@ -3790,13 +3768,15 @@ static uint16_t nvme_ebpf_read(NvmeCtrl *n, NvmeRequest *req)
         uint8_t *buf;
         uint64_t size;
         uint64_t offset;
+        uint64_t depth;
     } mem = {
         .opaque = blk,
         .buf = out_buf,
         .size = data_size,
-        .offset = data_offset
+        .offset = data_offset,
+        .depth = rw->cdw2
     };
-    ret = ubpf_exec(n->ubpf_state->vm, &mem, 5, &ubpf_ret);
+    ret = ubpf_exec(n->ubpf_state->vm, &mem, sizeof(mem), &ubpf_ret);
     if (ret < 0) {
         error_report("Execution failed");
     } else if (ubpf_ret != 0) {
@@ -4745,7 +4725,6 @@ static uint16_t __nvme_io_cmd_nvm(NvmeCtrl *n, NvmeRequest *req)
     case NVME_CMD_WRITE:
         return nvme_write(n, req);
     case NVME_CMD_READ:
-    case NVME_CMD_UBPF_READ:
         return nvme_read(n, req);
     case NVME_CMD_COMPARE:
         return nvme_compare(n, req);
@@ -4765,6 +4744,7 @@ static uint16_t __nvme_io_cmd_nvm(NvmeCtrl *n, NvmeRequest *req)
         return nvme_ebpf_read(n, req);
     }
 
+    printf("The number is %X\n", req->cmd.opcode);
     g_assert_not_reached();
 }
 
@@ -7652,10 +7632,15 @@ static uint16_t nvme_security_receive(NvmeCtrl *n, NvmeRequest *req)
     }
 }
 
-static uint64_t ebpf_pread(uint64_t buf, uint64_t bytes, uint64_t offset, uint64_t, uint64_t, void *opaque)
+static uint64_t ebpf_pread(uint64_t buf, uint64_t bytes, uint64_t offset, uint64_t _a, uint64_t _b, void *opaque)
 {
     BlockBackend *blk = *(BlockBackend **)opaque;
     int ret = blk_pread(blk, offset, bytes, (void *)buf, 0);
+
+    if (ret < 0) {
+        error_report("Error while reading offset %" PRId64 " %s", offset, strerror(-ret));
+    }
+
     return ret < 0 ? 1 : 0;
 }
 
@@ -7675,10 +7660,17 @@ static uint16_t nvme_install_ebpf(NvmeCtrl *n, NvmeRequest *req)
         return ret;
     }
 
+    if (!n->ubpf_state->vm) {
+        n->ubpf_state->vm = ubpf_create();
+    }
+
+    printf("registering function\n");
+    ubpf_register(n->ubpf_state->vm, 2, "pread", as_external_function_t(ebpf_pread));
+    printf("function registered, loading bytecode\n");
     if (qemu_ubpf_load_bytecode(n->ubpf_state, buf, prog_size) < 0) {
         return NVME_INTERNAL_DEV_ERROR;
     }
-    ubpf_register(n->ubpf_state->vm, 0, "pread", as_external_function_t(ebpf_pread));
+    printf("Bytecode loaded\n");
 
     return NVME_SUCCESS;
 }
