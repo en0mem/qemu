@@ -622,6 +622,7 @@ enum NvmeAdminCommands {
     NVME_ADM_CMD_FORMAT_NVM     = 0x80,
     NVME_ADM_CMD_SECURITY_SEND  = 0x81,
     NVME_ADM_CMD_SECURITY_RECV  = 0x82,
+    NVME_ADM_CMD_INSTALL_EBPF   = 0xc0,
 };
 
 enum NvmeIoCommands {
@@ -639,6 +640,7 @@ enum NvmeIoCommands {
     NVME_CMD_ZONE_MGMT_SEND     = 0x79,
     NVME_CMD_ZONE_MGMT_RECV     = 0x7a,
     NVME_CMD_ZONE_APPEND        = 0x7d,
+    NVME_CMD_EBPF_READ          = 0x80,
 };
 
 typedef struct QEMU_PACKED NvmeDeleteQ {

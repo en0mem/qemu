@@ -2268,13 +2268,16 @@ endif
 ubpf = not_found
 ubpf_opt = 'disabled'
 if have_system
-  ubpf_opt = get_option('ubpf')
-  if ubpf_opt in ['enabled', 'auto', 'system']
-    have_internal = fs.exists(meson.current_source_dir() / 'ubpf/vm/Makefile')
-    ubpf = dependency('ubpf', kwargs: static_kwargs,
-                      method: 'pkg-config',
-                      required: ubpf_opt == 'system' or
-                      ubpf_opt == 'enabled' and not have_internal)
+  ubpf_feature = get_option('ubpf')
+  if ubpf_feature.enabled()
+    ubpf_opt = 'enabled'
+  elif ubpf_feature.auto()
+    ubpf_opt = 'auto'
+  endif
+  if ubpf_opt in ['enabled', 'auto']
+    have_internal = fs.exists(meson.current_source_dir() / 'ubpf/vm/CMakeLists.txt')
+    ubpf = dependency('ubpf', method: 'pkg-config',
+                      required: ubpf_opt == 'enabled' and not have_internal)
     if ubpf.found()
       ubpf_opt = 'system'
     elif have_internal
@@ -2285,11 +2288,23 @@ if have_system
   endif
   if ubpf_opt == 'internal'
     ubpf_data = configuration_data()
+    ubpf_config_data = configuration_data()
+    ubpf_config_data.set('UBPF_HAS_ELF_H', true)
+
+    configure_file(
+      input: 'ubpf/vm/ubpf_config.h.inc',
+      output: 'ubpf_config.h',
+      configuration: ubpf_config_data,
+      format: 'cmake'
+    )
 
     ubpf_files = files(
-      'ubpf/vm/ubpf_jit_x86_64.c',
       'ubpf/vm/ubpf_vm.c',
       'ubpf/vm/ubpf_loader.c',
+      'ubpf/vm/ubpf_jit.c',
+      'ubpf/vm/ubpf_jit_x86_64.c',
+      'ubpf/vm/ubpf_jit_support.c',
+      'ubpf/vm/ubpf_instruction_valid.c'
     )
 
     ubpf_cargs = [
@@ -2307,8 +2322,6 @@ if have_system
                               include_directories: ubpf_inc)
   endif
 endif
-
-common_ss.add(ubpf)
 
 #################
 # config-host.h #
@@ -4125,6 +4138,7 @@ common_ss.add(hwcore)
 
 system_ss.add(authz, blockdev, chardev, crypto, io, qmp)
 common_ss.add(qom, qemuutil)
+common_ss.add(ubpf)
 
 libuser = static_library('user',
                          user_ss.all_sources() + genh,

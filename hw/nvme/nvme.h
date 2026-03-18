@@ -23,6 +23,7 @@
 #include "hw/block/block.h"
 
 #include "block/nvme.h"
+#include "ebpf/ubpf.h"
 
 #define NVME_MAX_CONTROLLERS 256
 #define NVME_MAX_NAMESPACES  256
@@ -666,6 +667,8 @@ typedef struct NvmeCtrl {
 
     /* Socket mapping to SPDM over NVMe Security In/Out commands */
     int spdm_socket;
+
+    UbpfState *ubpf_state;
 } NvmeCtrl;
 
 typedef enum NvmeResetType {
