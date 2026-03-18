@@ -2276,8 +2276,7 @@ if have_system
   endif
   if ubpf_opt in ['enabled', 'auto']
     have_internal = fs.exists(meson.current_source_dir() / 'ubpf/vm/CMakeLists.txt')
-    ubpf = dependency('ubpf',
-                      method: 'pkg-config',
+    ubpf = dependency('ubpf', method: 'pkg-config',
                       required: ubpf_opt == 'enabled' and not have_internal)
     if ubpf.found()
       ubpf_opt = 'system'
@@ -2289,6 +2288,15 @@ if have_system
   endif
   if ubpf_opt == 'internal'
     ubpf_data = configuration_data()
+    ubpf_config_data = configuration_data()
+    ubpf_config_data.set('UBPF_HAS_ELF_H', true)
+
+    configure_file(
+      input: 'ubpf/vm/ubpf_config.h.inc',
+      output: 'ubpf_config.h',
+      configuration: ubpf_config_data,
+      format: 'cmake'
+    )
 
     # Generate ubpf_config.h (required by ubpf headers)
     ubpf_config_data = configuration_data()
@@ -2306,8 +2314,9 @@ if have_system
       'ubpf/vm/ubpf_vm.c',
       'ubpf/vm/ubpf_loader.c',
       'ubpf/vm/ubpf_jit.c',
+      'ubpf/vm/ubpf_jit_x86_64.c',
       'ubpf/vm/ubpf_jit_support.c',
-      'ubpf/vm/ubpf_instruction_valid.c',
+      'ubpf/vm/ubpf_instruction_valid.c'
     )
     if host_machine.cpu_family() == 'x86_64'
       ubpf_files += files('ubpf/vm/ubpf_jit_x86_64.c')
@@ -4155,6 +4164,7 @@ common_ss.add(hwcore)
 
 system_ss.add(authz, blockdev, chardev, crypto, io, qmp)
 common_ss.add(qom, qemuutil)
+common_ss.add(ubpf)
 
 libuser = static_library('user',
                          user_ss.all_sources() + genh,

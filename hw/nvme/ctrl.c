@@ -285,7 +285,7 @@ static const uint32_t nvme_cse_acs_default[256] = {
     [NVME_ADM_CMD_DIRECTIVE_SEND]   = NVME_CMD_EFF_CSUPP,
     [NVME_ADM_CMD_SECURITY_SEND]    = NVME_CMD_EFF_CSUPP,
     [NVME_ADM_CMD_SECURITY_RECV]    = NVME_CMD_EFF_CSUPP,
-    [NVME_ADM_CMD_UBPF_UPLOAD]      = NVME_CMD_EFF_CSUPP,
+    [NVME_ADM_CMD_INSTALL_EBPF]     = NVME_CMD_EFF_CSUPP,
 };
 
 static const uint32_t nvme_cse_iocs_nvm_default[256] = {
@@ -300,6 +300,7 @@ static const uint32_t nvme_cse_iocs_nvm_default[256] = {
     [NVME_CMD_COMPARE]              = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_IO_MGMT_RECV]         = NVME_CMD_EFF_CSUPP,
     [NVME_CMD_IO_MGMT_SEND]         = NVME_CMD_EFF_CSUPP | NVME_CMD_EFF_LBCC,
+    [NVME_CMD_EBPF_READ]            = NVME_CMD_EFF_CSUPP,
 };
 
 static const uint32_t nvme_cse_iocs_zoned_default[256] = {
@@ -3753,6 +3754,62 @@ invalid:
     return status | NVME_DNR;
 }
 
+static uint16_t nvme_ebpf_read(NvmeCtrl *n, NvmeRequest *req)
+{
+    NvmeRwCmd *rw = (NvmeRwCmd *)&req->cmd;
+    NvmeNamespace *ns = req->ns;
+    BlockBackend *blk = ns->blkconf.blk;
+    uint64_t slba = le64_to_cpu(rw->slba);
+    uint32_t nlb = (uint32_t)le16_to_cpu(rw->nlb) + 1;
+    uint64_t out_size = req->sg.qsg.size;
+    g_autofree uint8_t *out_buf = g_malloc(out_size);
+    uint64_t data_size = nvme_l2b(ns, nlb);
+    uint64_t data_offset;
+    uint16_t status;
+    uint64_t ubpf_ret;
+    int ret;
+
+    assert(!nvme_ns_ext(ns));
+    status = nvme_check_mdts(n, data_size);
+    if (status) {
+        goto invalid;
+    }
+    status = nvme_check_bounds(ns, slba, nlb);
+    if (status) {
+        goto invalid;
+    }
+    assert(!ns->params.zoned);
+    status = nvme_map_data(n, nlb, req);
+    if (status) {
+        goto invalid;
+    }
+    data_offset = nvme_l2b(ns, slba);
+
+    struct {
+        void *opaque;
+        uint8_t *buf;
+        uint64_t size;
+        uint64_t offset;
+    } mem = {
+        .opaque = blk,
+        .buf = out_buf,
+        .size = data_size,
+        .offset = data_offset
+    };
+    ret = ubpf_exec(n->ubpf_state->vm, &mem, 5, &ubpf_ret);
+    if (ret < 0) {
+        error_report("Execution failed");
+    } else if (ubpf_ret != 0) {
+        error_report("Program failed");
+    }
+    dma_buf_read(out_buf, out_size, NULL, &req->sg.qsg, MEMTXATTRS_UNSPECIFIED);
+
+    return NVME_SUCCESS;
+
+invalid:
+    return status | NVME_DNR;
+}
+
 static void nvme_do_write_fdp(NvmeCtrl *n, NvmeRequest *req, uint64_t slba,
                               uint32_t nlb)
 {
@@ -4704,6 +4761,8 @@ static uint16_t __nvme_io_cmd_nvm(NvmeCtrl *n, NvmeRequest *req)
         return nvme_io_mgmt_recv(n, req);
     case NVME_CMD_IO_MGMT_SEND:
         return nvme_io_mgmt_send(n, req);
+    case NVME_CMD_EBPF_READ:
+        return nvme_ebpf_read(n, req);
     }
 
     g_assert_not_reached();
@@ -7593,6 +7652,37 @@ static uint16_t nvme_security_receive(NvmeCtrl *n, NvmeRequest *req)
     }
 }
 
+static uint64_t ebpf_pread(uint64_t buf, uint64_t bytes, uint64_t offset, uint64_t, uint64_t, void *opaque)
+{
+    BlockBackend *blk = *(BlockBackend **)opaque;
+    int ret = blk_pread(blk, offset, bytes, (void *)buf, 0);
+    return ret < 0 ? 1 : 0;
+}
+
+static uint16_t nvme_install_ebpf(NvmeCtrl *n, NvmeRequest *req)
+{
+    uint32_t prog_size = le32_to_cpu(req->cmd.cdw10);
+    uint16_t ret;
+    g_autofree uint8_t *buf = NULL;
+
+    if (!n->ubpf_state) {
+        n->ubpf_state = g_malloc0(sizeof(UbpfState));
+    }
+
+    buf = g_malloc(prog_size);
+    ret = nvme_h2c(n, buf, prog_size, req);
+    if (ret) {
+        return ret;
+    }
+
+    if (qemu_ubpf_load_bytecode(n->ubpf_state, buf, prog_size) < 0) {
+        return NVME_INTERNAL_DEV_ERROR;
+    }
+    ubpf_register(n->ubpf_state->vm, 0, "pread", as_external_function_t(ebpf_pread));
+
+    return NVME_SUCCESS;
+}
+
 static uint16_t nvme_directive_send(NvmeCtrl *n, NvmeRequest *req)
 {
     return NVME_INVALID_FIELD | NVME_DNR;
@@ -7732,8 +7822,8 @@ static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeRequest *req)
         return nvme_security_send(n, req);
     case NVME_ADM_CMD_SECURITY_RECV:
         return nvme_security_receive(n, req);
-    case NVME_ADM_CMD_UBPF_UPLOAD:
-        return nvme_ubpf_upload(n, req);
+    case NVME_ADM_CMD_INSTALL_EBPF:
+        return nvme_install_ebpf(n, req);
     default:
         g_assert_not_reached();
     }

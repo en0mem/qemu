@@ -3,6 +3,7 @@
 #include "ubpf.h"
 #include "ebpf/ubpf.h"
 
+#include <elf.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -96,27 +97,29 @@ uint64_t qemu_ubpf_run_once(UbpfState *u_ebpf, void *target, size_t target_len) 
     return result;
 }
 
-static uint32_t ubpf_get_random_number() {
-    static uint64_t rng_state = 0xDEADBEEFBECAFE;
+static uint64_t get_random_number(void)
+{
+    static uint64_t rng_state = 0xdeadbeefcafebabe;
     uint64_t x = rng_state;
-
-
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
     rng_state = x;
-    return (uint32_t)x;
+    return x;
 }
 
 static void register_functions(struct ubpf_vm *vm) {
-    // add a predictable rng to simulate read bytes
-    ubpf_register(vm, 1, "get_random_number", as_external_function_t(ubpf_get_random_number));
+    ubpf_register(vm, 1, "get_random_number", as_external_function_t(get_random_number));
 }
 
-int qemu_ubpf_init_vm(UbpfState *u_ebpf) {
-    if (u_ebpf->vm) {
-        return 0;
-    }
+int qemu_ubpf_load_bytecode(UbpfState *u_ebpf, const void *code, size_t code_len) {
+    bool is_elf;
+    char *errmsg;
+    int ret;
+
+    u_ebpf->code_len = code_len;
+    u_ebpf->code = g_malloc(code_len);
+    memcpy(u_ebpf->code, code, code_len);
 
     u_ebpf->vm = ubpf_create();
     if (!u_ebpf->vm) {
@@ -125,40 +128,19 @@ int qemu_ubpf_init_vm(UbpfState *u_ebpf) {
     }
 
     register_functions(u_ebpf->vm);
-    return 0;
-}
-
-int qemu_ubpf_load_bytecode(UbpfState *u_ebpf, const void *code, size_t code_len) {
-    bool is_elf;
-    char *errmsg;
-    int ret;
-
-    if (!u_ebpf->vm) {
-        if (qemu_ubpf_init_vm(u_ebpf) < 0) {
-            return -1;
-        }
-    }
-
-    u_ebpf->code_len = code_len;
-    u_ebpf->code = g_malloc(code_len);
-    memcpy(u_ebpf->code, code, code_len);
 
     is_elf = u_ebpf->code_len >= SELFMAG && !memcmp(u_ebpf->code, ELFMAG, SELFMAG);
 
     if (is_elf) {
-#if defined(UBPF_HAS_ELF_H)
         ret = ubpf_load_elf(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
-#else
-        error_report("uBPF ELF loading is not supported in this build.");
-        return -1;
-#endif
     } else {
         ret = ubpf_load(u_ebpf->vm, u_ebpf->code, u_ebpf->code_len, &errmsg);
     }
-    
+
     if (ret < 0) {
         error_report("Failed to load ubpf code: %s ", errmsg);
         free(errmsg);
+        ubpf_destroy(u_ebpf->vm);
         return -1;
     }
 
